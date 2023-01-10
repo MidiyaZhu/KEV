@@ -4,6 +4,7 @@ from torchtext import data
 import torch.optim as optim
 import random
 import torch.nn as nn
+# from nnet.modules import EmbedLayer, Encoder, Dot_Attention, Node_Attention, Classifier, ContrastiveLoss
 import torch.nn.functional as F
 import time
 import spacy
@@ -20,10 +21,10 @@ import const
 from pytorch_transformers import *
 from transformers import BertTokenizer
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-
+# tokenizer = BertTokenizer('vocab_update.txt', do_lower_case= True)
 init_token = tokenizer.cls_token
 eos_token = tokenizer.sep_token
 pad_token = tokenizer.pad_token
@@ -101,7 +102,9 @@ def build_dataiterator(TEXT,LABEL,train_data,valid_data,test_data,device,BATCH_S
 
     return train_iterator,valid_iterator,test_iterator
 
+
 bert = BertModel.from_pretrained('bert-base-uncased')
+
 class ClassificationBert_LSTM(nn.Module):
     def __init__(self, num_labels,batch_size,hidden_dim,n_layers,dropout,bidirectional):
         super(ClassificationBert_LSTM, self).__init__()
@@ -111,7 +114,7 @@ class ClassificationBert_LSTM(nn.Module):
         self.n_layers = n_layers
         # self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.bert = bert
-        self.linear = nn.Linear(hidden_dim, num_labels)
+        self.linear = nn.Linear(hidden_dim , num_labels)
 
         self.embedding_dim = bert.config.to_dict()['hidden_size']
 
@@ -120,62 +123,28 @@ class ClassificationBert_LSTM(nn.Module):
                            num_layers=n_layers,
                            bidirectional=bidirectional,
                            dropout=dropout)
-        self.lstm = nn.LSTM(self.embedding_dim*2, hidden_dim, num_layers=n_layers,
+        self.lstm = nn.LSTM(self.embedding_dim, hidden_dim, num_layers=n_layers,
                             dropout=dropout, batch_first=True)
         self.fc = nn.Linear(hidden_dim * 2, num_labels)
 
         self.dropout = nn.Dropout(dropout)
-        self.drop = nn.Dropout(dropout)
-        self.linear_first = torch.nn.Linear(hidden_dim, 100)
-        self.linear_first.bias.data.fill_(0)
-        self.linear_second = torch.nn.Linear(100, 1)
-        self.linear_second.bias.data.fill_(0)
-        self.linear_final = torch.nn.Linear(hidden_dim, num_labels)
 
-        self.r = 1
-
-    def softmax(self, input, axis=1):
-
-        input_size = input.size()
-        trans_input = input.transpose(axis, len(input_size) - 1)
-        trans_size = trans_input.size()
-        input_2d = trans_input.contiguous().view(-1, trans_size[-1])
-        soft_max_2d = F.softmax(input_2d)
-        soft_max_nd = soft_max_2d.view(*trans_size)
-        return soft_max_nd.transpose(axis, len(input_size) - 1)
-
-    def StructuredSelfAttention(self, outputs, hidden_state, embdim):
-      
-        x = F.tanh(self.linear_first(outputs))  # [32,56,100]
-        x = self.linear_second(x)  # [32,56,1]
-        x = self.softmax(x, 1)  # [32,56,1]
-        attention = x.transpose(1, 2)  # [32,1,56]
-        sentence_embeddings = attention @ outputs  # [32,1,256]
-        avg_sentence_embeddings = torch.sum(sentence_embeddings, 1) / self.r
-
-        output = self.linear_final(avg_sentence_embeddings)  # [32,6]
-
-        return output, x
-
-    def forward(self, x, word_embedding_vocab, emotion_vocab):
+    def forward(self, x,text_lengths):
         # Encode input text
-      
+        # print(x.shape)
+        # x = x.permute(1, 0)
         with torch.no_grad():
             all_hidden, pooler = self.bert(x)
-        c_all_hidden = torch.zeros(len(all_hidden), len(all_hidden[0]), len(all_hidden[0][0]) * 2)
-        for batch in range(len(x)):
-            for index in range(len(x[batch])):
-                if int(x[batch][index]) in emotion_vocab:
-                    c_all_hidden[batch][index] = torch.cat(
-                        (word_embedding_vocab[int(x[batch][index])].squeeze(0), all_hidden[batch][index]), 0)
-                else:
-                  
-                    c_all_hidden[batch][index] = torch.cat((all_hidden[batch][index], all_hidden[batch][index]), 0)
-        embdim = c_all_hidden.shape[0]
-        pooled_output, (hidden, cell) = self.lstm(c_all_hidden.cuda())
-        attn_output, word_weights = self.StructuredSelfAttention(pooled_output, hidden, embdim)
-
-        return attn_output, word_weights.squeeze(2)
+        embedded=all_hidden.permute(1,0,2)  #embedded [seqlen,batch,embeddim]
+        packed_embedded = nn.utils.rnn.pack_padded_sequence(embedded, text_lengths.cpu(), enforce_sorted=False)
+        #
+        packed_output, (hidden, cell) = self.rnn(packed_embedded)
+        #hidden [4,batch,hiddim]
+        hidden1 = self.dropout(torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1))
+        #
+        # # hidden1 = [batch size, hid dim * num directions]
+        #
+        return self.fc(hidden1), hidden1
 
 
 
@@ -203,8 +172,7 @@ def parm_to_excel(excel_name,key_name,parm):
                 data.to_excel(writer,index=False,header=True,startrow=i*(filter_size+1),startcol=j*filter_size)
 
 
-
-def train(model, iterator, optimizer, criterion,word_embedding_vocab,emotion_vocab):
+def train(model, iterator, optimizer, criterion):
 
     epoch_loss = 0
     epoch_acc = 0
@@ -213,28 +181,24 @@ def train(model, iterator, optimizer, criterion,word_embedding_vocab,emotion_voc
 
     count=0
     for batch in iterator:
-    
+      
         optimizer.zero_grad()
-        text= batch.text
-
-        predictions, cat = model(text,  word_embedding_vocab, emotion_vocab)
+        text, text_length = batch.text
+        
+        predictions, cat = model(text, text_length)
       
         pp_log = predictions
-      
+
         loss = criterion(pp_log, batch.label)
         acc,final= categorical_accuracy(pp_log, batch.label)
         count+=len(batch.label)
         loss.backward()
 
         optimizer.step()
-
-        epoch_loss += loss.item()
-        epoch_acc += acc.item()
-
-  
+     
     return epoch_loss / len(iterator), epoch_acc /count
-
-def evaluate(model, iterator, criterion,texicon,word_embedding_vocab,emotion_vocab):
+    
+def evaluate(model, iterator, criterion,texicon):
 
     epoch_loss = 0
     epoch_acc = 0
@@ -244,23 +208,20 @@ def evaluate(model, iterator, criterion,texicon,word_embedding_vocab,emotion_voc
     with torch.no_grad():
         count=0
         for batch in iterator:
-            text = batch.text
-
-            predictions, cat = model(text,  word_embedding_vocab, emotion_vocab)
+            text, text_length = batch.text
+          
+            predictions, cat = model(text, text_length)
             prediction_log = predictions
 
             loss = criterion(prediction_log, batch.label)
             acc,final = categorical_accuracy(prediction_log, batch.label)
             count += len(batch.label)
-            label = batch.label
-           
+          
             epoch_loss += loss.item()
             epoch_acc += acc.item()
-         
-
+          
     return epoch_loss / len(iterator), epoch_acc /count
-
-
+    
 def epoch_time(start_time, end_time):
     elapsed_time = end_time - start_time
     elapsed_mins = int(elapsed_time / 60)
@@ -271,36 +232,32 @@ def epoch_time(start_time, end_time):
 
 
 
-
 if __name__=='__main__':
- 
-    word_embedding_vocab = torch.load(r'ev/emotionbert/dic/word_embedding_vocabm.npy')
-    emotion_vocab=[]
-    for item in word_embedding_vocab:
-        emotion_vocab.append(item)
+  
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(device)
-
+    print(device)    
+    SEED = 1234
     data_path = r'data/'
-
-    train_file = 'meld_train.csv'
-    valid_file = 'meld_valid.csv'
-    test_file = 'meld_test.csv'
-
-    TEXT, LABEL, VOCAB, train_data, valid_data,test_data, texicon = data_loader(data_path, train_file,valid_file,test_file)
-
-    N_EPOCHS = 30
-    lr = 5e-4
+    train_file = 'dataset2_train.csv'
+    valid_file = 'dataset2_val.csv'
+    test_file = 'dataset2_test.csv' 
+    TEXT, LABEL,train_data, valid_data,test_data, texicon = data_loader(data_path,train_file,valid_file,test_file,SEED)
+    N_EPOCHS = 15
+    lr = 5e-4  
     FILTER_SIZES = [2]
     OUTPUT_DIM = len(LABEL.vocab)
     DROPOUT = 0.5
     N_LAYERS = 2
-    BIDIRECTIONAL = True   
+    BIDIRECTIONAL = True
+
     use_cuda = True
     attention_size = 16
+    sequence_length = 5000
     BATCH_SIZE = 32
+
     model = ClassificationBert_LSTM(num_labels=OUTPUT_DIM, batch_size=BATCH_SIZE, hidden_dim=256,
-                                    n_layers=N_LAYERS, dropout=DROPOUT, bidirectional=BIDIRECTIONAL)
+                                    n_layers=N_LAYERS,
+                                    dropout=DROPOUT, bidirectional=BIDIRECTIONAL)
 
     for name, param in model.named_parameters():
         if name.startswith('bert'):
@@ -309,44 +266,45 @@ if __name__=='__main__':
     torch.manual_seed(SEED)
     torch.backends.cudnn.deterministic = True
 
-    train_iterator, valid_iterator,test_iterator = build_dataiterator(TEXT, LABEL,VOCAB,
+    train_iterator, valid_iterator,test_iterator = build_dataiterator(TEXT, LABEL,
                                                       train_data,valid_data, test_data,
                                                      device,BATCH_SIZE)
 
 
-    pathl = r'model/model.pt'
+    pathl = r'model.pt'
 
 
     print(f'The model has {count_parameters(model):,} trainable parameters')
  
-
     optimizer = optim.Adam(model.parameters(),lr=lr)
-  
+
+
     #Loss function
     criterion1=nn.CrossEntropyLoss()
 
     model = model.to(device)
 
     criterion1 = criterion1.to(device)
+    best_valid_posacc=float(0)
     bestl_valid_acc = float(0)
+    best_valid_negacc = float(0)
     bestl_valid_loss = float('inf')
+ 
     for epoch in range(N_EPOCHS):
 
         start_time = time.time()
-
-        train_loss, train_acc = train(model, train_iterator,optimizer, criterion1,word_embedding_vocab,emotion_vocab)
+     
+        train_loss, train_acc= train(model, train_iterator,
+                                                                        optimizer, criterion1)
         valid_loss, valid_acc= evaluate(
             model,
             valid_iterator,
-            criterion1, texicon,word_embedding_vocab,emotion_vocab)
-
-
-
+            criterion1, texicon)
+     
         end_time = time.time()
 
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)
 
-    
         if valid_loss < bestl_valid_loss:
 
             torch.save(model.state_dict(), pathl)
@@ -354,13 +312,10 @@ if __name__=='__main__':
         print(f'Epoch: {epoch + 1:02} | Epoch Time: {epoch_mins}m {epoch_secs}s')
         print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
         print(f'\t Val. Loss: {valid_loss:.3f} |  Val. Acc: {valid_acc * 100:.2f}%')
-
+   
     model.load_state_dict(torch.load(pathl))
 
+
     test_loss, test_acc= evaluate(
-        model, test_iterator, criterion1, texicon,word_embedding_vocab,emotion_vocab)
+        model, test_iterator, criterion1, texicon)
 
-
-    print(f'Test Loss: {test_loss:.3f} | Test Acc: {test_acc * 100:.2f}%')
-
- 

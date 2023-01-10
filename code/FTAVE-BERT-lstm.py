@@ -47,7 +47,8 @@ def tokenize_and_cut(sentence):
     tokens = tokenizer.tokenize(sentence)
     tokens = tokens[:max_input_length-2]
     return tokens
-def data_loader(path,all_file,train_file,valid_file,test_file):
+
+def data_loader(path,train_file,valid_file,test_file,SEED):
     TEXT = data.Field(batch_first=True,
                       use_vocab=False,
                       tokenize=tokenize_and_cut,
@@ -56,48 +57,48 @@ def data_loader(path,all_file,train_file,valid_file,test_file):
                       eos_token=eos_token_idx,
                       pad_token=pad_token_idx,
                       unk_token=unk_token_idx)
+  
     LABEL = data.LabelField(dtype=torch.long)
-    VOCAB = data.LabelField(dtype=torch.long)
-    fields = [('text', TEXT), ('label', LABEL), ('vocab', VOCAB)]
+ 
+    fields = [('text', TEXT), ('label', LABEL)]
 
-    train_data,  test_data = data.TabularDataset.splits(path=path,
+    train_data, valid_data, test_data = data.TabularDataset.splits(path=path,
                                                                    train=train_file,
+                                                                   validation=valid_file,
                                                                    test=test_file,
                                                                    format='csv',
                                                                    fields=fields,
                                                                    skip_header=True)
-  
-    all_data, valid_data = data.TabularDataset.splits(path=path,
-                                                      train=all_file,
-                                                      test=valid_file,
-                                                      format='csv',
-                                                      fields=fields,
-                                                      skip_header=True)
+
 
     LABEL.build_vocab(train_data)
-    VOCAB.build_vocab(all_data)
+
     texicon = LABEL.vocab.itos
     print('label index: ',len(LABEL.vocab.stoi))
+   
     print(f"Unique tokens in LABEL vocabulary: {len(LABEL.vocab)}")
     print(texicon)
-    return TEXT,LABEL,VOCAB, train_data,valid_data, test_data,texicon
+    return TEXT,LABEL,train_data,valid_data, test_data,texicon
 
-
-def build_dataiterator(TEXT,LABEL,VOCAB,train_data,valid_data,test_data,device,BATCH_SIZE):
-      fields =  [('text', TEXT), ('label', LABEL),('vocab',VOCAB)]
+def build_dataiterator(TEXT,LABEL,train_data,valid_data,test_data,device,BATCH_SIZE):
+   
+    fields =  [('text', TEXT), ('label', LABEL)]
     train_data = data.Dataset(train_data, fields, filter_pred=None)
     valid_data = data.Dataset(valid_data, fields, filter_pred=None)
     test_data = data.Dataset(test_data,fields,filter_pred=None)
 
 
+
     print('traindata:',len(train_data),'validdata:',len(valid_data),'test: ',len(test_data))
-   
-    train_iterator, valid_iterator, test_iterator = data.BucketIterator.splits(
+  
+
+    train_iterator, valid_iterator, test_iterator= data.BucketIterator.splits(
         (train_data, valid_data,test_data),
         batch_size=BATCH_SIZE,
         sort_within_batch=False,
         sort_key=lambda x: len(x.text),
         device=device)
+
     return train_iterator,valid_iterator,test_iterator
 
 bert = BertModel.from_pretrained('bert-base-uncased')
@@ -281,16 +282,11 @@ if __name__=='__main__':
 
     data_path = r'data/'
 
-    all_file = 'meld_all.csv'
-
     train_file = 'meld_train.csv'
     valid_file = 'meld_valid.csv'
     test_file = 'meld_test.csv'
 
-
-    TEXT, LABEL, VOCAB, train_data, valid_data,test_data, texicon = data_loader(data_path, all_file,train_file,valid_file,test_file)
-
-
+    TEXT, LABEL, VOCAB, train_data, valid_data,test_data, texicon = data_loader(data_path,train_file,valid_file,test_file)
 
     N_EPOCHS = 30
     lr = 5e-4
@@ -350,12 +346,9 @@ if __name__=='__main__':
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)
 
     
-        if valid_acc >= bestl_valid_acc:
-            bestl_valid_acc = valid_acc
-            bestl_valid_loss = valid_loss
-            bestl_train_loss = train_loss
-            bestl_train_acc = train_acc
-          
+        if valid_loss < bestl_valid_loss:
+
+           
             torch.save(model.state_dict(), pathl)
 
         print(f'Epoch: {epoch + 1:02} | Epoch Time: {epoch_mins}m {epoch_secs}s')
