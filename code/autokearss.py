@@ -4,13 +4,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
 import autokeras as ak
 
-trainSet = pd.read_csv('/data1/zzx/sa/labelembeddingmodel/data/emotion-labels-train.csv')
-valSet = pd.read_csv('/data1/zzx/sa/labelembeddingmodel/data/emotion-labels-val.csv')
-testSet = pd.read_csv('/data1/zzx/sa/labelembeddingmodel/data/emotion-labels-test.csv')
+trainSet = pd.read_csv('emotion-labels-train.csv')
+valSet = pd.read_csv('emotion-labels-val.csv')
+testSet = pd.read_csv('emotion-labels-test.csv')
 trainSet.head()
-testf1, testmacro, testmicro = [], [], []
-bestf1list, bestmalist, bestmilist = [], [], []
-testaccuracy, testaccuracy_l = [], []
+
 SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 100, 110, 123, 124, 52, 342, 543, 120, 1234, 543, 76, 657]
 train = pd.concat([trainSet, valSet], axis=0).reset_index(drop=True)
 for seed in SEEDS:
@@ -53,16 +51,4 @@ for seed in SEEDS:
         f1, macro, micro = f1_score(y_test_ak, pred_keras, average='weighted'), f1_score(y_test_ak, pred_keras, average='macro'), f1_score(
                 y_test_ak, pred_keras, average='micro')
         print('f1: ', f1, '\nmacro: ', macro,'\nmicro: ',micro )
-        testf1.append(f1)
-        testmacro.append(macro)
-        testmicro.append(micro)
-
-file = r'/data1/zzx/sa/labelembeddingmodel/FTnewcode/result/autokears.txt'
-with open(file, 'a') as f:
-        f.write(
-                f'in test: test_acc: {testaccuracy}\n ave test_Acc: {np.mean(testaccuracy)}\n'
-                f'test_f1: {testf1}\n ave test_f1: {np.mean(testf1)}\n'
-                f'test_macro: {testmacro}\n ave test_f1: {np.mean(testmacro)}\n'
-                f'test_micro: {testmicro}\n ave test_f1: {np.mean(testmicro)}\nn'
-
-        )
+      
